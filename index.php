@@ -1,109 +1,386 @@
 <?php
-// index.php
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🚗 Vehicle RC Checker | 100% Working</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        :root {
-            --primary: #4361ee;
-            --secondary: #3a0ca3;
-            --accent: #f72585;
-            --success: #4cc9f0;
-            --dark: #1a1a2e;
-            --light: #f8f9fa;
+
+class RCAPI {
+    private $AES_KEY = "RTO@N@1V@\$U2024#";
+    private $CUSTOM_RESPONSE_MESSAGE = "Fetched [ SENPAI ]";
+    
+    private $CARS24_CONFIG = [
+        'BASE_URL' => "https://seller-lead.cars24.team",
+        'AUTH_HEADER' => "Basic ",
+        'PVT_AUTH_HEADER' => "Bearer ",
+        'PHONE_NUMBER' => "YOUR_PHONE_NUMBER", // यहाँ अपना phone number डालें
+        'USER_ID' => "YOUR_USER_ID" // यहाँ अपना user ID डालें
+    ];
+    
+    public function __construct() {
+        header('Content-Type: application/json');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Methods: GET, POST');
+    }
+    
+    private function encrypt($plaintext, $key) {
+        $key = substr($key, 0, 16);
+        $ciphertext = openssl_encrypt($plaintext, 'AES-128-ECB', $key, OPENSSL_RAW_DATA);
+        return base64_encode($ciphertext);
+    }
+    
+    private function decrypt($ciphertextBase64, $key) {
+        try {
+            $key = substr($key, 0, 16);
+            $ciphertext = base64_decode($ciphertextBase64);
+            $decrypted = openssl_decrypt($ciphertext, 'AES-128-ECB', $key, OPENSSL_RAW_DATA);
+            return $decrypted;
+        } catch (Exception $e) {
+            error_log("Decryption error: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    private function getUnmaskedData($rcNumber) {
+        $url = "http://147.93.27.177:3000/rc?search=" . urlencode($rcNumber);
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_FAILONERROR => true
+        ]);
+        
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+        
+        if ($error) {
+            error_log("Unmasked API error: " . $error);
+            return null;
         }
         
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        $data = json_decode($response, true);
+        if (isset($data['code']) && $data['code'] === "SUCCESS" && isset($data['data'])) {
+            return [
+                'owner_name' => $data['data']['registration_details']['owner_name'] ?? null,
+                'father_name' => $data['data']['ownership_details']['father_name'] ?? null,
+                'vehicle_age' => $data['data']['important_dates']['vehicle_age'] ?? null
+            ];
         }
         
-        body {
-            font-family: 'Poppins', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            position: relative;
-            overflow-x: hidden;
+        return null;
+    }
+    
+    private function getChallanInfo($rcNumber) {
+        error_log("Fetching challan info for: " . $rcNumber);
+        
+        $leadData = [
+            'phone' => $this->CARS24_CONFIG['PHONE_NUMBER'],
+            'vehicle_reg_no' => $rcNumber,
+            'user_id' => $this->CARS24_CONFIG['USER_ID'],
+            'whatsapp_consent' => true,
+            'type' => "challan",
+            'device_category' => "Mweb"
+        ];
+        
+        $headers = [
+            'authority: seller-lead.cars24.team',
+            'accept: application/json, text/plain, */*',
+            'authorization: ' . $this->CARS24_CONFIG['AUTH_HEADER'],
+            'content-type: application/json',
+            'origin: https://www.cars24.com',
+            'pvtauthorization: ' . $this->CARS24_CONFIG['PVT_AUTH_HEADER'],
+            'referer: https://www.cars24.com/',
+            'user-agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+        ];
+        
+        // Create lead
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $this->CARS24_CONFIG['BASE_URL'] . '/prospect/lead',
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($leadData),
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $response = curl_exec($ch);
+        curl_close($ch);
+        
+        $leadResponse = json_decode($response, true);
+        
+        if (!isset($leadResponse['success']) || !$leadResponse['success']) {
+            error_log("Failed to create lead");
+            return null;
         }
         
-        /* Background Animation */
-        .particles {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
+        $token = $leadResponse['detail']['token'] ?? null;
+        if (!$token) {
+            return null;
         }
         
-        .particle {
-            position: absolute;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
-            animation: float 20s infinite linear;
+        error_log("Lead created, token: " . $token);
+        
+        // Get challan data
+        $challanHeaders = [
+            'authority: seller-lead.cars24.team',
+            'accept: application/json, text/plain, */*',
+            'authorization: ' . $this->CARS24_CONFIG['AUTH_HEADER'],
+            'device_category: m-web',
+            'origin: https://www.cars24.com',
+            'origin_source: c2b-website',
+            'platform: Challan',
+            'pvtauthorization: ' . $this->CARS24_CONFIG['PVT_AUTH_HEADER'],
+            'referer: https://www.cars24.com/',
+            'user-agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+        ];
+        
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $this->CARS24_CONFIG['BASE_URL'] . '/challan/list/' . urlencode($token),
+            CURLOPT_HTTPHEADER => $challanHeaders,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30
+        ]);
+        
+        $challanResponse = curl_exec($ch);
+        curl_close($ch);
+        
+        $challanData = json_decode($challanResponse, true);
+        
+        if (isset($challanData['status']) && $challanData['status'] === 200) {
+            return $challanData['detail'] ?? null;
         }
         
-        @keyframes float {
-            0% {
-                transform: translateY(100vh) translateX(0) rotate(0deg);
-                opacity: 0;
+        return null;
+    }
+    
+    private function processChallanData($challanDetail) {
+        if (!$challanDetail) return null;
+        
+        $processed = [
+            'processing_status' => $challanDetail['processingStatus'] ?? null,
+            'total_online_amount' => $challanDetail['pendingChallans']['totalOnlineChallanAmount'] ?? 0,
+            'total_offline_amount' => $challanDetail['pendingChallans']['totalOfflineChallanAmount'] ?? 0,
+            'total_amount' => ($challanDetail['pendingChallans']['totalOnlineChallanAmount'] ?? 0) + 
+                            ($challanDetail['pendingChallans']['totalOfflineChallanAmount'] ?? 0),
+            'pending_challans' => []
+        ];
+        
+        $challanTypes = ['physicalCourtChallans', 'virtualCourtChallans', 'recentlyAddedChallans'];
+        
+        foreach ($challanTypes as $type) {
+            if (isset($challanDetail['pendingChallans'][$type]) && is_array($challanDetail['pendingChallans'][$type])) {
+                foreach ($challanDetail['pendingChallans'][$type] as $challan) {
+                    $processed['pending_challans'][] = [
+                        'challan_no' => $challan['challanNo'] ?? null,
+                        'unique_id' => $challan['uniqueIdentifier'] ?? null,
+                        'status' => $challan['status'] ?? null,
+                        'computed_status' => $challan['computedStatus'] ?? null,
+                        'offence_name' => $challan['offences'][0]['offenceName'] ?? "Unknown Offence",
+                        'penalty_amount' => $challan['amount'] ?? 0,
+                        'date_time' => $challan['dateTime'] ?? null,
+                        'location' => $challan['offenceLocation'] ?? null,
+                        'state' => $challan['stateCd'] ?? null,
+                        'court_type' => $challan['courtType'] ?? null,
+                        'payment_status' => $challan['paymentStatus'] ?? null,
+                        'pending_duration' => $challan['challanPendingFor'] ?? null,
+                        'is_payable' => $challan['isPayable'] ?? false,
+                        'challan_images' => $challan['challanImages'] ?? [],
+                        'provider_type' => $challan['challanProviderSubType'] ?? null
+                    ];
+                }
             }
-            10% {
-                opacity: 1;
+        }
+        
+        // Sort by date
+        usort($processed['pending_challans'], function($a, $b) {
+            return strtotime($b['date_time']) - strtotime($a['date_time']);
+        });
+        
+        return $processed;
+    }
+    
+    private function formatChallanResponse($processedChallanInfo) {
+        if (!$processedChallanInfo) {
+            return [
+                'status' => false,
+                'response_code' => 404,
+                'response_message' => "No challan information available",
+                'data' => []
+            ];
+        }
+        
+        return [
+            'status' => true,
+            'response_code' => 200,
+            'response_message' => "Challan information fetched successfully",
+            'data' => [$processedChallanInfo]
+        ];
+    }
+    
+    private function mergeRcData($originalData, $unmaskedData) {
+        if (!isset($originalData['data']) || !is_array($originalData['data']) || empty($originalData['data'])) {
+            return $originalData;
+        }
+        
+        $mergedData = $originalData;
+        $rcItem = $mergedData['data'][0];
+        
+        if ($unmaskedData) {
+            if (!empty($unmaskedData['owner_name']) && isset($rcItem['owner_name']) && strpos($rcItem['owner_name'], '*') !== false) {
+                $rcItem['owner_name'] = $unmaskedData['owner_name'];
             }
-            90% {
-                opacity: 1;
+            
+            if (!empty($unmaskedData['father_name']) && isset($rcItem['father_name']) && strpos($rcItem['father_name'], '*') !== false) {
+                $rcItem['father_name'] = $unmaskedData['father_name'];
             }
-            100% {
-                transform: translateY(-100px) translateX(100px) rotate(360deg);
-                opacity: 0;
+            
+            if (!empty($unmaskedData['vehicle_age'])) {
+                $rcItem['vehicle_age'] = $unmaskedData['vehicle_age'];
             }
         }
         
-        /* Main Container */
-        .main-container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+        $mergedData['response_message'] = $this->CUSTOM_RESPONSE_MESSAGE;
+        $mergedData['data'] = [$rcItem];
         
-        /* Header Card */
-        .header-card {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 25px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
-            margin-bottom: 30px;
-            animation: slideDown 0.8s ease-out;
-        }
-        
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-50px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
+        return $mergedData;
+    }
+    
+    private function decryptApiResponse($encryptedResponse) {
+        if (is_string($encryptedResponse)) {
+            $decrypted = $this->decrypt($encryptedResponse, $this->AES_KEY);
+            if ($decrypted) {
+                $json = json_decode($decrypted, true);
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    return $json;
+                }
+                return $decrypted;
             }
         }
+        return $encryptedResponse;
+    }
+    
+    public function getRCData($rcNumber) {
+        if (empty($rcNumber)) {
+            return [
+                'status' => false,
+                'message' => "RC number is required"
+            ];
+        }
         
-        .header-content {
-            background: linear-gradient(135deg, var(--primary), var(--secondary));
-            color: white;
-            padding: 40px;
-            text-align: center;
-            position: relative;
-            overflow: hidden;
+        try {
+            // Parallel API calls
+            $unmaskedData = $this->getUnmaskedData($rcNumber);
+            $challanDetail = $this->getChallanInfo($rcNumber);
+            $processedChallanInfo = $this->processChallanData($challanDetail);
+            
+            // Encrypt RC for main API
+            $encryptedRc = $this->encrypt($rcNumber, $this->AES_KEY);
+            
+            // Prepare form data
+            $formData = [
+                'YLnoBJXFHWIb6n+vaU5Fqw===' => 'hEetH/fxDYkaiPV1O08JXGavuWKAHB7H//KqlbPQizq1sxbHamO8edqhIcOJJybWVc4wf11tUxC1uEtwt2OHiKuzQ4fSmex9pkrf6bj/yztMQT9yb5+E3V3RttX0S1WRXRiNakRvo+pOiu6k8j8M+C6aLHvrWxqTQnP9ND0xv3EQyxcgjYt5rk2qVOWP+nf8',
+                'uniDRnuJvTpCyd8qqa7bmg===' => '6UcabyegT3XEmP2Mw0Jwfw==',
+                'wmbVbuTELPkity3gk1FSLw===' => 'hwc6sd9eQz3sd8aZ5tWtOSO9P/8c0ruHIRUDVqC4PzmK3ZgUJ5W/1ibrOgk6+bHhGaWCca3iQ6qfy5v/zhdLXw==',
+                'kqvOc7zzeKL9GQi3s97hRg===' => 'KOgloc/Wkh/JKFVr/Y5bZA==',
+                '6itFonmUeG7GaEL8YAz1dw===' => 'DHKgKTb0PD667WXK14bQxQ==',
+                'gaQw08ye60GZvOaEjDxwSg===' => '7Xx2UpV+mliqWirrrkrJ4A==',
+                'KldjgNJiCoLPelKQK12wCg===' => 'Wg4luew+ZNYaVLvuYevUwhJMt5Q0FwINOnT3ntNuXiM=',
+                '8qv0XiLt71c2Mcb7A/0ETw===' => '2femjV0XNiZlRIoza3rq/Q==',
+                'zKMffadDKn74L6D8Erq/Ow===' => 'HjCiWD0aGnOHqRk+sJhmSg==',
+                'aQ1IgwRQsEsftk0pG3qVOA===' => 'NDEpmB1IH3r0ZWPKlDX42g==',
+                'kxBCVJqsDl1CnYYrPI+ESg===' => '6UcabyegT3XEmP2Mw0Jwfw==',
+                '4svShi1T5ftaZPNNHhJzig===' => $encryptedRc,
+                'lES0BMK4Gbc62W3W5/cR3Q===' => '6UcabyegT3XEmP2Mw0Jwfw==',
+                '5ES5V9fBsVv2zixvup+QfGUYTXf6w2Wb7rfo1vbyiZo=' => '6UcabyegT3XEmP2Mw0Jwfw==',
+                'w0dcvRNvk81864M2TM1R4w===' => '4n04akOAWVJ7qY7ccwxckA==',
+                'Qh35ea+zP5C5YndUy+/5hQ===' => 'Eky3lDQXAg06dPee025eIw==',
+                'zdR9T9RDHgdRB7xdozvLRNUdr4dDNKvva1aeDyqC22ASTLeUNBcCDTp0957Tbl4j=' => 'zeLxdIWt2S3VdsxhpTwY1A==',
+                'eMY6P1CkF0Iya2o8nxqYGpW47fJY0qkIn/5knbV9Kos=' => 'zeLxdIWt2S3VdsxhpTwY1A=='
+            ];
+            
+            // Call main API
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => "https://rcdetailsapi.vehicleinfo.app/api/vasu_rc_doc_details",
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query($formData),
+                CURLOPT_HTTPHEADER => [
+                    'User-Agent: okhttp/5.0.0-alpha.11',
+                    'Accept-Encoding: gzip',
+                    'Content-Type: application/x-www-form-urlencoded',
+                    'authorization: ',
+                    'version_code: 13.39',
+                    'device_type: android'
+                ],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false
+            ]);
+            
+            $response = curl_exec($ch);
+            curl_close($ch);
+            
+            // Process response
+            $rc_xhudai = $this->decryptApiResponse($response);
+            
+            if (is_array($rc_xhudai)) {
+                $rc_xhudai = $this->mergeRcData($rc_xhudai, $unmaskedData);
+            }
+            
+            // Prepare final response
+            return [
+                'query' => $rcNumber,
+                'rc_chudai' => $rc_xhudai,
+                'challan_info' => $this->formatChallanResponse($processedChallanInfo)
+            ];
+            
+        } catch (Exception $e) {
+            error_log("API Error: " . $e->getMessage());
+            return [
+                'status' => false,
+                'message' => "Failed to fetch RC details",
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+}
+
+// Main execution
+if (php_sapi_name() === 'cli') {
+    // Command line mode
+    echo "🚗 RC API Server\n";
+    echo "📝 Response message: Fetched [ SENPAI ]\n";
+    echo "🔐 Using AES encryption\n";
+    echo "🚓 Challan information: ENABLED\n\n";
+    
+    // You can test with: php rc_api.php UK04AQ9000
+    if (isset($argv[1])) {
+        $api = new RCAPI();
+        $result = $api->getRCData($argv[1]);
+        print_r($result);
+    } else {
+        echo "Usage: php rc_api.php RC_NUMBER\n";
+        echo "Example: php rc_api.php UK04AQ9000\n";
+    }
+} else {
+    // Web server mode
+    $api = new RCAPI();
+    
+    if (isset($_GET['query'])) {
+        $rc = $_GET['query'];
+        $result = $api->getRCData($rc);
+        echo json_encode($result, JSON_PRETTY_PRINT);
+    } else {
+        echo json_encode([
+            'status' => false,
+            'message' => "Missing query parameter",
+            'usage' => "/rc_api.php?query=RC_NUMBER",
+            'example' => "/rc_api.php?query=UK04AQ9000"
+        ]);
+    }
+}
+
+?>            overflow: hidden;
         }
         
         .header-content::before {
